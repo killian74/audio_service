@@ -1,0 +1,519 @@
+import 'dart:async';
+import 'dart:math';
+import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:rxdart/rxdart.dart';
+
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: "Stream'In",
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        visualDensity: VisualDensity.adaptivePlatformDensity,
+      ),
+      debugShowCheckedModeBanner: false,
+      home: PlayAudioPage(),
+    );
+  }
+}
+
+class PlayAudioPage extends StatefulWidget {
+  @override
+  _PlayAudioPageState createState() => _PlayAudioPageState();
+}
+
+class _PlayAudioPageState extends State<PlayAudioPage> {
+
+  Color primaryColor = Color(0xFF00B97E);
+  bool buttonPressed = false;
+
+  int index = 0;
+  bool audioServiceStarted = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return AudioServiceWidget(
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            title: Text("audio_service", style: TextStyle(fontFamily: "Ariale"),),
+            centerTitle: true,
+          ),
+          body: Center(
+            child: Center(
+              child: StreamBuilder<bool>(
+                stream: AudioService.runningStream,
+                builder: (context, snapshot) {
+                  final running = snapshot.data ?? false;
+                  if(!running){
+                    return ElevatedButton(
+                      onPressed: () {
+                        startAudioService();
+                      },
+                      child: Text("test"),
+                    );
+                  }else{
+                    if(!audioServiceStarted){
+                      startAudioService();
+                    }
+                    if (snapshot.connectionState != ConnectionState.active) {
+                      return CircularProgressIndicator();
+                    }else{
+                      return Column(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          StreamBuilder<QueueState>(
+                            stream: _queueStateStream,
+                            builder: (context, snapshot) {
+                              final queueState = snapshot.data;
+                              final queue = queueState?.queue ?? [];
+                              final mediaItem = queueState?.mediaItem;
+                              return Card(
+                                margin: EdgeInsets.symmetric(horizontal: MediaQuery.of(context).size.width*0.075),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15.0)),
+                                color: Colors.grey[900],
+                                child: Padding(
+                                  padding: const EdgeInsets.all(8.0),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(mediaItem?.title != null? mediaItem.title : "", style: TextStyle(fontSize: 22.0, fontFamily: "Ariale", color: Colors.white), textAlign: TextAlign.center,),
+                                      Text(mediaItem?.artist != null? mediaItem.artist : "", style: TextStyle(fontSize: 17.0, fontFamily: "Ariale", color: Colors.grey[600]),),
+                                      StreamBuilder<MediaState>(
+                                        stream: _mediaStateStream,
+                                        builder: (context, snapshot) {
+                                          final mediaState = snapshot.data;
+                                          return SeekBar(
+                                            duration: mediaState?.mediaItem?.duration ?? Duration.zero,
+                                            position: mediaState?.position ?? Duration.zero,
+                                            onChangeEnd: (newPosition) {
+                                              AudioService.seekTo(newPosition);
+                                            },
+                                            //postRef: widget,
+                                          );
+                                        },
+                                      ),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          IconButton(icon: Icon(Icons.playlist_play_sharp, color: Colors.white,), onPressed: () {}),
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            children: [
+                                              IconButton(
+                                                icon: Icon(Icons.skip_previous, color: Colors.white,),
+                                                iconSize: 40.0,
+                                                onPressed: (){
+                                                  if((queue != null && queue.isNotEmpty) && mediaItem == queue.first){
+                                                    return null;
+                                                  }else{
+                                                    if(index>0){
+                                                      setState(() {
+                                                        index--;
+                                                      });
+                                                    }
+                                                    AudioService.skipToPrevious();
+                                                  }
+                                                },
+                                              ),
+                                              StreamBuilder<bool>(
+                                                stream: AudioService.playbackStateStream
+                                                    .map((state) => state.playing)
+                                                    .distinct(),
+                                                builder: (context, secondSnapshot) {
+                                                  final playing = secondSnapshot.data ?? false;
+                                                  return playing? pauseButton() : playButton();
+                                                },
+                                              ),
+                                              IconButton(
+                                                icon: Icon(Icons.skip_next, color: Colors.white,),
+                                                iconSize: 40.0,
+                                                onPressed: (){
+                                                  if((queue != null && queue.isNotEmpty) && mediaItem == queue.last){
+                                                    return null;
+                                                  }else{
+                                                    if(index<queue.length-1){
+                                                      setState(() {
+                                                        index++;
+                                                      });
+                                                    }
+                                                    return AudioService.skipToNext();
+                                                  }
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                          IconButton(icon: Icon(Icons.favorite_border, color: Colors.white,), onPressed: () {}),
+                                        ],
+                                      )
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      );
+                    }
+                  }
+                },
+              ),
+
+            ),
+          ),
+        )
+    );
+  }
+
+  Stream<MediaState> get _mediaStateStream =>
+      Rx.combineLatest2<MediaItem, Duration, MediaState>(
+          AudioService.currentMediaItemStream,
+          AudioService.positionStream,
+              (mediaItem, position) => MediaState(mediaItem, position));
+
+  Stream<QueueState> get _queueStateStream =>
+      Rx.combineLatest2<List<MediaItem>, MediaItem, QueueState>(
+          AudioService.queueStream,
+          AudioService.currentMediaItemStream,
+              (queue, mediaItem) => QueueState(queue, mediaItem));
+
+  void startAudioService() async{
+    audioServiceStarted = true;
+
+    List<MediaItem> playlist = [
+      MediaItem(id: "https://s3.amazonaws.com/scifri-episodes/scifri20181123-episode.mp3", album: "Science Friday", title: "A Salute To Head-Scratching Science", artist: "Science Friday and WNYC Studios", duration: Duration(milliseconds: 5739820), artUri: "https://media.wnyc.org/i/1400/1400/l/80/1/ScienceFriday_WNYCStudios_1400.jpg",),
+      MediaItem(id: "https://s3.amazonaws.com/scifri-segments/scifri201711241.mp3",album: "Science Friday",title: "From Cat Rheology To Operatic Incompetence", artist: "Science Friday and WNYC Studios", duration: Duration(milliseconds: 2856950), artUri: "https://media.wnyc.org/i/1400/1400/l/80/1/ScienceFriday_WNYCStudios_1400.jpg",),
+    ];
+    await AudioService.start(
+      androidStopForegroundOnPause: true,
+      backgroundTaskEntrypoint: _audioPlayerTaskEntrypoint,
+      androidNotificationChannelName: 'AudioPlayer',
+      androidNotificationColor: 0xFF2196f3,
+      androidNotificationIcon: 'mipmap/ic_launcher',
+      androidEnableQueue: true,
+    );
+    await AudioService.updateQueue(playlist);
+    await AudioService.skipToQueueItem(playlist[0].id);
+
+    AudioService.play();
+  }
+
+  ElevatedButton startButton(String label, VoidCallback onPressed) =>
+      ElevatedButton(
+        child: Text(label),
+        onPressed: onPressed,
+      );
+
+  IconButton playButton() => IconButton(
+    icon: Icon(Icons.play_arrow, color: Colors.white,),
+    iconSize: 40.0,
+    onPressed: AudioService.play,
+  );
+
+  IconButton pauseButton() => IconButton(
+    icon: Icon(Icons.pause, color: Colors.white,),
+    iconSize: 40.0,
+    onPressed: AudioService.pause,
+  );
+
+}
+
+class QueueState {
+  final List<MediaItem> queue;
+  final MediaItem mediaItem;
+
+  QueueState(this.queue, this.mediaItem);
+}
+
+class MediaState {
+  final MediaItem mediaItem;
+  final Duration position;
+
+  MediaState(this.mediaItem, this.position);
+}
+
+class SeekBar extends StatefulWidget {
+  final Duration duration;
+  final Duration position;
+  final ValueChanged<Duration> onChanged;
+  final ValueChanged<Duration> onChangeEnd;
+
+  SeekBar({
+    @required this.duration,
+    @required this.position,
+    this.onChanged,
+    this.onChangeEnd,
+  });
+
+  @override
+  _SeekBarState createState() => _SeekBarState();
+}
+
+class _SeekBarState extends State<SeekBar> {
+  double _dragValue;
+  bool _dragging = false;
+  bool viewCountAdded = false;
+  int index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = min(_dragValue ?? widget.position?.inMilliseconds?.toDouble(),
+        widget.duration.inMilliseconds.toDouble());
+    if (_dragValue != null && !_dragging) {
+      _dragValue = null;
+    }
+    if(AudioPlayerTask().index != null){
+      if(index<AudioPlayerTask().index){
+        print("inferior");
+      }
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            activeTrackColor: Colors.black,
+            inactiveTrackColor: Colors.grey[700],
+            trackHeight: 3.0,
+            thumbColor: Colors.black,
+            thumbShape: RoundSliderThumbShape(enabledThumbRadius: 8.0),
+            overlayColor: Colors.grey[600],
+            overlayShape: RoundSliderOverlayShape(overlayRadius: 15.0),
+          ),
+          child: Slider(
+            min: 0.0,
+            max: widget.duration.inMilliseconds.toDouble(),
+            value: value,
+            onChanged: (value) {
+              if (!_dragging) {
+                _dragging = true;
+              }
+              setState(() {
+                _dragValue = value;
+              });
+              if (widget.onChanged != null) {
+                widget.onChanged(Duration(milliseconds: value.round()));
+              }
+            },
+            onChangeEnd: (value) {
+              if (widget.onChangeEnd != null) {
+                widget.onChangeEnd(Duration(milliseconds: value.round()));
+              }
+              _dragging = false;
+            },
+          ),
+        ),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: 10.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(RegExp(r'((^0*[1-9]\d*:)?\d{2}:\d{2})\.\d+$').firstMatch("${widget.position}")?.group(1) ?? '${widget.position}',
+                style: TextStyle(fontFamily: "Ariale", color: Colors.white),
+              ),
+              Text(
+                  RegExp(r'((^0*[1-9]\d*:)?\d{2}:\d{2})\.\d+$').firstMatch("${widget.duration}")?.group(1) ?? '${widget.duration}',
+                  style: TextStyle(fontFamily: "Ariale", color: Colors.white)
+              ),
+            ],
+          ),
+        )
+      ],
+    );
+  }
+}
+
+void _audioPlayerTaskEntrypoint() async {
+  AudioServiceBackground.run(() => AudioPlayerTask());
+}
+
+class AudioPlayerTask extends BackgroundAudioTask {
+  var _queue = <MediaItem>[];
+  AudioPlayer _player = AudioPlayer();
+  AudioProcessingState _skipState;
+  Seeker _seeker;
+  StreamSubscription<PlaybackEvent> _eventSubscription;
+
+  List<MediaItem> get queue => _queue;
+
+  int get index => _player.currentIndex;
+  MediaItem get mediaItem => index == null ? null : queue[index];
+
+
+  @override
+  Future<void> onStart(Map<String, dynamic> params) async {
+    _queue.clear();
+    final session = await AudioSession.instance;
+    await session.configure(AudioSessionConfiguration.speech());
+    await _player.setLoopMode(LoopMode.all);
+    _player.currentIndexStream.listen((index) {
+      print("index value is $index");
+      if (index != null) AudioServiceBackground.setMediaItem(queue[index]);
+    });
+    _eventSubscription = _player.playbackEventStream.listen((event) {
+      _broadcastState();
+    });
+    _player.processingStateStream.listen((state) {
+      switch (state) {
+        case ProcessingState.completed:
+          onStop();
+          break;
+        case ProcessingState.ready:
+          _skipState = null;
+          break;
+        default:
+          break;
+      }
+    });
+  }
+
+  @override
+  Future<void> onSkipToQueueItem(String mediaId) async {
+    final newIndex = queue.indexWhere((item) => item.id == mediaId);
+    if (newIndex == -1) return;
+    _skipState = newIndex > index
+        ? AudioProcessingState.skippingToNext
+        : AudioProcessingState.skippingToPrevious;
+    _player.seek(Duration.zero, index: newIndex);
+    AudioServiceBackground.sendCustomEvent('skip to $newIndex');
+
+  }
+
+  @override
+  Future<void> onUpdateQueue(List<MediaItem> queue) async{
+    AudioServiceBackground.setQueue(_queue = queue);
+    print(queue.length);
+    await _player.setAudioSource(ConcatenatingAudioSource(
+      children: queue.map((item) => AudioSource.uri(Uri.parse(item.id))).toList(),
+    ));
+  }
+
+  @override
+  Future<void> onPlay() => _player.play();
+
+  @override
+  Future<void> onPause() => _player.pause();
+
+  @override
+  Future<void> onSeekTo(Duration position) => _player.seek(position);
+
+  @override
+  Future<void> onFastForward() => _seekRelative(fastForwardInterval);
+
+  @override
+  Future<void> onRewind() => _seekRelative(-rewindInterval);
+
+  @override
+  Future<void> onSeekForward(bool begin) async => _seekContinuously(begin, 1);
+
+  @override
+  Future<void> onSeekBackward(bool begin) async => _seekContinuously(begin, -1);
+
+  @override
+  Future<void> onStop() async {
+    await _player.dispose();
+    _eventSubscription.cancel();
+    await _broadcastState();
+    await super.onStop();
+  }
+
+  Future<void> _seekRelative(Duration offset) async {
+    var newPosition = _player.position + offset;
+    if (newPosition < Duration.zero) newPosition = Duration.zero;
+    if (newPosition > mediaItem.duration) newPosition = mediaItem.duration;
+    await _player.seek(newPosition);
+  }
+
+  void _seekContinuously(bool begin, int direction) {
+    _seeker?.stop();
+    if (begin) {
+      _seeker = Seeker(_player, Duration(seconds: 10 * direction),
+          Duration(seconds: 1), mediaItem)
+        ..start();
+    }
+  }
+
+  Future<void> _broadcastState() async {
+    await AudioServiceBackground.setState(
+      controls: [
+        MediaControl.skipToPrevious,
+        if (_player.playing) MediaControl.pause else MediaControl.play,
+        MediaControl.stop,
+        MediaControl.skipToNext,
+      ],
+      systemActions: [
+        MediaAction.seekTo,
+        MediaAction.seekForward,
+        MediaAction.seekBackward,
+      ],
+      androidCompactActions: [0, 1, 3],
+      processingState: _getProcessingState(),
+      playing: _player.playing,
+      position: _player.position,
+      bufferedPosition: _player.bufferedPosition,
+      speed: _player.speed,
+    );
+  }
+
+  AudioProcessingState _getProcessingState() {
+    if (_skipState != null) return _skipState;
+    switch (_player.processingState) {
+      case ProcessingState.idle:
+        return AudioProcessingState.stopped;
+      case ProcessingState.loading:
+        return AudioProcessingState.connecting;
+      case ProcessingState.buffering:
+        return AudioProcessingState.buffering;
+      case ProcessingState.ready:
+        return AudioProcessingState.ready;
+      case ProcessingState.completed:
+        return AudioProcessingState.completed;
+      default:
+        throw Exception("Invalid state: ${_player.processingState}");
+    }
+  }
+}
+
+class Seeker {
+  final AudioPlayer player;
+  final Duration positionInterval;
+  final Duration stepInterval;
+  final MediaItem mediaItem;
+  bool _running = false;
+
+  Seeker(
+      this.player,
+      this.positionInterval,
+      this.stepInterval,
+      this.mediaItem,
+      );
+
+  start() async {
+    _running = true;
+    while (_running) {
+      Duration newPosition = player.position + positionInterval;
+      if (newPosition < Duration.zero) newPosition = Duration.zero;
+      if (newPosition > mediaItem.duration) newPosition = mediaItem.duration;
+      player.seek(newPosition);
+      await Future.delayed(stepInterval);
+    }
+  }
+
+  stop() {
+    _running = false;
+
+  }
+}
